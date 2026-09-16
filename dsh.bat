@@ -1,3 +1,5 @@
 @echo off
-set "PATH=%~dp0;%~dp0\node_modules\.bin;%PATH%"
-"%~dp0\node.exe" "%~dp0\node_modules\some-cli\lib\cli.js" %*
+setlocal
+set "PATH=%~dp0runtime\node_modules\.bin;%~dp0runtime;%PATH%"
+set "DSH_HOME=%~dp0..\home"
+"%~dp0runtime\node_modules\.bin\dsh.cmd" %*

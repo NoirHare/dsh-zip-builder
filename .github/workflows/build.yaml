@@ -12,8 +12,15 @@ jobs:
             suffix: windows-x64
     runs-on: ${{matrix.os}}
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: node -p "process.execPath"
+      - run: |
+          New-Item -Path ".\bin" -ItemType Directory
+          Set-Location ".\bin"
+          npm i @deepseek-ai/dsh@latest pnpm@latest
+          Copy-Item ((node -p "process.execPath").Trim()) ".\node.exe" -Force
+          Remove-Item -Path .\package.json -Force
+          tree /F
 

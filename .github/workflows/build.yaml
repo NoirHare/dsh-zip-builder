@@ -1,6 +1,8 @@
 name: dsh-zip-builder
 
 on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -10,6 +12,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: dsh-zip-builder
+  cancel-in-progress: false
 
 jobs:
   build:

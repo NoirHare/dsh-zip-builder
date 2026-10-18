@@ -110,7 +110,7 @@ jobs:
           if ($env:EXISTS -eq 'true') {
             gh release upload $tag $env:ZIP --clobber --repo $env:GITHUB_REPOSITORY
           } else {
-            gh release create $tag $env:ZIP --title "dsh $env:VERSION" --latest=false --repo $env:GITHUB_REPOSITORY
+            gh release create $tag $env:ZIP --latest=false --repo $env:GITHUB_REPOSITORY
           }
 
           Write-Host "::notice::Published $tag with $env:ZIP"

@@ -1,12 +1,11 @@
-name: dsh-zip-builder
+name: Build dsh zip
 
 on:
   schedule:
-    - cron: '7,22,37,52 * * * *'
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
     inputs:
       force:
-        required: false
         type: boolean
         default: false
 
@@ -14,55 +13,78 @@ permissions:
   contents: write
 
 concurrency:
-  group: dsh-zip-builder
+  group: build-dsh-zip
   cancel-in-progress: false
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            suffix: windows-x64
-    runs-on: ${{ matrix.os }}
+  release:
+    runs-on: windows-latest
     steps:
       - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: "24"
 
-      - id: dsh-latest
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve latest version of @deepseek-ai/dsh
+        id: version
         run: |
-          $Version = (npm view @deepseek-ai/dsh version).Trim()
-          "version=$Version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          gh release view "v$Version" --repo "${{ github.repository }}" *> $null
+          "version=$(npm view '@deepseek-ai/dsh' version)" >> $env:GITHUB_OUTPUT
+
+      - name: Check whether the release already exists
+        id: check
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $out = gh release view "v$env:VERSION" --repo $env:GITHUB_REPOSITORY 2>&1
+
           if ($LASTEXITCODE -eq 0) {
-            "exists=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            $exists = 'true'
+          } elseif ($out -match 'not found') {
+            $exists = 'false'
           } else {
-            "exists=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            throw "gh release view failed: $out"
           }
+
+          Write-Host "::notice::v$env:VERSION exists=$exists"
+          "exists=$exists" >> $env:GITHUB_OUTPUT
           exit 0
 
-      - if: ${{ steps.dsh-latest.outputs.exists != 'true' || inputs.force }}
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        if: steps.check.outputs.exists == 'false' || inputs.force
 
-      - if: ${{ steps.dsh-latest.outputs.exists != 'true' || inputs.force }}
+      - name: Install dsh, pnpm and node.exe into runtime
+        if: steps.check.outputs.exists == 'false' || inputs.force
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          New-Item -Path ".\runtime" -ItemType Directory -Force | Out-Null
-          Set-Location ".\runtime"
-          npm i @deepseek-ai/dsh@latest pnpm@latest --no-audit --no-fund
-          Copy-Item ((node -p "process.execPath").Trim()) ".\node.exe" -Force
-          Remove-Item -Force .\package.json, .\package-lock.json -ErrorAction SilentlyContinue
-      - if: ${{ steps.dsh-latest.outputs.exists != 'true' || inputs.force }}
-        shell: pwsh
-        run: Compress-Archive -Force -Path .\runtime, .\dsh.bat -DestinationPath .\dsh-${{ matrix.suffix }}.zip
+          npm install --prefix runtime --omit=dev "@deepseek-ai/dsh@$env:VERSION" pnpm
 
-      - if: ${{ steps.dsh-latest.outputs.exists == 'true' && inputs.force }}
+          Copy-Item (Get-Command node).Source runtime/node.exe -Force
+
+      - name: Create the zip archive
+        id: pack
+        if: steps.check.outputs.exists == 'false' || inputs.force
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release delete "v${{ steps.dsh-latest.outputs.version }}" --repo "${{ github.repository }}" --yes --cleanup-tag
-      - if: ${{ steps.dsh-latest.outputs.exists != 'true' || inputs.force }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $zip = "dsh-$env:VERSION-win-x64.zip"
+          & "$env:ProgramFiles\7-Zip\7z.exe" a -bb0 $zip runtime dsh.bat
+          "zip=$zip" >> $env:GITHUB_OUTPUT
+
+      - name: Publish the release
+        if: steps.check.outputs.exists == 'false' || inputs.force
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "v${{ steps.dsh-latest.outputs.version }}" .\dsh-${{ matrix.suffix }}.zip --repo "${{ github.repository }}" --title "v${{ steps.dsh-latest.outputs.version }}"
+          VERSION: ${{ steps.version.outputs.version }}
+          EXISTS: ${{ steps.check.outputs.exists }}
+          ZIP: ${{ steps.pack.outputs.zip }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v$env:VERSION"
+
+          if ($env:EXISTS -eq 'true') {
+            gh release upload $tag $env:ZIP --clobber
+          } else {
+            gh release create $tag $env:ZIP --notes ""
+          }
+
+          Write-Host "::notice::Published $tag with $env:ZIP"

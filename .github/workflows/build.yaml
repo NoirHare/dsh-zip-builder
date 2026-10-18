@@ -17,74 +17,106 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  plan:
+    name: Plan one release per dist-tag
     runs-on: windows-latest
+    outputs:
+      releases: ${{ steps.plan.outputs.releases }}
     steps:
       - uses: actions/setup-node@v7
         with:
           node-version: "24"
 
-      - name: Resolve latest version of @deepseek-ai/dsh
-        id: version
-        run: |
-          "version=$(npm view '@deepseek-ai/dsh' version)" >> $env:GITHUB_OUTPUT
-
-      - name: Check whether the release already exists
-        id: check
+      - name: Resolve the newest version of every dist-tag
+        id: plan
         env:
-          VERSION: ${{ steps.version.outputs.version }}
           GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force || 'false' }}
         run: |
-          $out = gh release view "v$env:VERSION" --repo $env:GITHUB_REPOSITORY 2>&1
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
 
-          if ($LASTEXITCODE -eq 0) {
-            $exists = 'true'
-          } elseif ($out -match 'not found') {
-            $exists = 'false'
-          } else {
-            throw "gh release view failed: $out"
+          # {"latest": "1.2.3", "alpha": "1.3.0-alpha.1", ...}
+          $distTags = npm view '@deepseek-ai/dsh' dist-tags --json | ConvertFrom-Json
+
+          $published = @()
+          if ($env:FORCE -ne 'true') {
+            $published = gh release list --repo $env:GITHUB_REPOSITORY --limit 1000 --json tagName --jq '.[].tagName'
           }
 
-          Write-Host "::notice::v$env:VERSION exists=$exists"
-          "exists=$exists" >> $env:GITHUB_OUTPUT
-          exit 0
+          $items = foreach ($group in $distTags.PSObject.Properties | Group-Object Value) {
+            $tag = "v$($group.Name)"
+            if ($published -contains $tag) {
+              Write-Host "::notice::$tag already published - skip"
+              continue
+            }
+
+            Write-Host "::notice::queue $tag"
+            [pscustomobject]@{ version = $group.Name }
+          }
+
+          $body = @($items | ConvertTo-Json -Compress) -join ','
+          if (-not $body) { $body = '{"version":""}' }
+          "releases=[$body]" >> $env:GITHUB_OUTPUT
+          Write-Host "matrix: [$body]"
+
+          $items | ForEach-Object { "- v$($_.version): queued" } |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+  release:
+    name: dsh ${{ matrix.version || 'nothing to do' }}
+    needs: plan
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.releases) }}
+    steps:
+      - name: Nothing to build
+        if: matrix.version == ''
+        run: Write-Host "::notice::Every dist-tag already has a release."
 
       - uses: actions/checkout@v7
-        if: steps.check.outputs.exists == 'false' || inputs.force
+        if: matrix.version != ''
 
       - name: Install dsh, pnpm and node.exe into runtime
-        if: steps.check.outputs.exists == 'false' || inputs.force
+        if: matrix.version != ''
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ matrix.version }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           npm install --prefix runtime --omit=dev "@deepseek-ai/dsh@$env:VERSION" pnpm
-
           Copy-Item (Get-Command node).Source runtime/node.exe -Force
 
       - name: Create the zip archive
         id: pack
-        if: steps.check.outputs.exists == 'false' || inputs.force
+        if: matrix.version != ''
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ matrix.version }}
         run: |
-          $zip = "dsh-$env:VERSION-win-x64.zip"
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $zip = "dsh-v$env:VERSION-win-x64.zip"
           & "$env:ProgramFiles\7-Zip\7z.exe" a -bb0 $zip runtime dsh.bat
           "zip=$zip" >> $env:GITHUB_OUTPUT
 
       - name: Publish the release
-        if: steps.check.outputs.exists == 'false' || inputs.force
+        if: matrix.version != ''
         env:
-          VERSION: ${{ steps.version.outputs.version }}
-          EXISTS: ${{ steps.check.outputs.exists }}
+          VERSION: ${{ matrix.version }}
+          EXISTS: ${{ matrix.exists }}
           ZIP: ${{ steps.pack.outputs.zip }}
           GH_TOKEN: ${{ github.token }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
           $tag = "v$env:VERSION"
 
           if ($env:EXISTS -eq 'true') {
-            gh release upload $tag $env:ZIP --clobber
+            gh release upload $tag $env:ZIP --clobber --repo $env:GITHUB_REPOSITORY
           } else {
-            gh release create $tag $env:ZIP --notes ""
+            gh release create $tag $env:ZIP --title "dsh $env:VERSION" --latest=false --repo $env:GITHUB_REPOSITORY
           }
 
           Write-Host "::notice::Published $tag with $env:ZIP"

@@ -36,36 +36,35 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
 
-          # {"latest": "1.2.3", "alpha": "1.3.0-alpha.1", ...}
-          $distTags = npm view '@deepseek-ai/dsh' dist-tags --json | ConvertFrom-Json
-
-          $published = @()
-          if ($env:FORCE -ne 'true') {
-            $published = gh release list --repo $env:GITHUB_REPOSITORY --limit 1000 --json tagName --jq '.[].tagName'
-          }
+          $distTags  = npm view '@deepseek-ai/dsh' dist-tags --json | ConvertFrom-Json
+          $published = gh release list --repo $env:GITHUB_REPOSITORY --limit 1000 --json tagName --jq '.[].tagName'
+          $force     = $env:FORCE -eq 'true'
 
           $items = foreach ($group in $distTags.PSObject.Properties | Group-Object Value) {
-            $tag = "v$($group.Name)"
-            if ($published -contains $tag) {
+            $tag    = "v$($group.Name)"
+            $exists = $published -contains $tag
+            if ($exists -and -not $force) {
               Write-Host "::notice::$tag already published - skip"
               continue
             }
-
-            Write-Host "::notice::queue $tag"
-            [pscustomobject]@{ version = $group.Name }
+            [pscustomobject]@{ version = $group.Name; exists = $exists }
           }
 
-          $body = @($items | ConvertTo-Json -Compress) -join ','
-          if (-not $body) { $body = '{"version":""}' }
-          "releases=[$body]" >> $env:GITHUB_OUTPUT
-          Write-Host "matrix: [$body]"
+          if ($items) {
+            $releases = '[' + (($items | ForEach-Object { $_ | ConvertTo-Json -Compress }) -join ',') + ']'
+          } else {
+            $releases = '[]'
+          }
 
+          "releases=$releases" >> $env:GITHUB_OUTPUT
+          Write-Host "matrix: $releases"
           $items | ForEach-Object { "- v$($_.version): queued" } |
             Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
   release:
     name: dsh ${{ matrix.version || 'nothing to do' }}
     needs: plan
+    if: needs.plan.outputs.releases != '[]'
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -73,14 +72,11 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.releases) }}
     steps:
       - name: Nothing to build
-        if: matrix.version == ''
         run: Write-Host "::notice::Every dist-tag already has a release."
 
       - uses: actions/checkout@v7
-        if: matrix.version != ''
 
       - name: Install dsh, pnpm and node.exe into runtime
-        if: matrix.version != ''
         env:
           VERSION: ${{ matrix.version }}
         run: |
@@ -91,7 +87,6 @@ jobs:
 
       - name: Create the zip archive
         id: pack
-        if: matrix.version != ''
         env:
           VERSION: ${{ matrix.version }}
         run: |
@@ -102,7 +97,6 @@ jobs:
           "zip=$zip" >> $env:GITHUB_OUTPUT
 
       - name: Publish the release
-        if: matrix.version != ''
         env:
           VERSION: ${{ matrix.version }}
           EXISTS: ${{ matrix.exists }}

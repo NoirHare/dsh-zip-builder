@@ -92,7 +92,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $PSNativeCommandUseErrorActionPreference = $true
-          $zip = "dsh-v$env:VERSION-win-x64.zip"
+          $zip = "dsh-v$env:VERSION-windows-x64.zip"
           & "$env:ProgramFiles\7-Zip\7z.exe" a -bb0 $zip runtime dsh.bat
           "zip=$zip" >> $env:GITHUB_OUTPUT
 
